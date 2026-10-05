@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Snake Duel</title>
+<style>
+:root{--bg:#0b1110;--ink:#d9ffe0;--g:#7cff4f;--m:#ff4fd8;--dim:#7a9a86;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html{scroll-padding-top:env(safe-area-inset-top,0px);background:#0b1110}
+*{box-sizing:inherit}
+body{margin:0;background:#0b1110;color:var(--ink);font:16px/1.45 "Courier New",monospace;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:12px}
+h1{margin:0;font-size:clamp(28px,7vw,48px);letter-spacing:.04em;color:var(--g)}
+p{margin:0;max-width:44ch;color:var(--dim);text-align:center}
+button,input{font:inherit;border-radius:6px;border:2px solid var(--g);background:transparent;color:var(--ink);padding:10px 20px}
+button{cursor:pointer;color:var(--g);font-weight:700}
+button:hover,button:focus-visible{background:var(--g);color:#0b1110;outline:none}
+input{width:12ch;text-align:center}
+.row{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;align-items:center}
+#game{display:none;flex-direction:column;align-items:center;gap:8px}
+.box{position:relative;width:min(94vw,68vh,560px)}
+canvas{width:100%;display:block;border:2px solid var(--g);border-radius:4px;background:#0b1110;touch-action:none}
+#ov{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center;font-weight:700;font-size:clamp(22px,6vw,40px);pointer-events:none;text-shadow:0 0 12px #000}
+#ov .row{pointer-events:auto;font-size:16px}
+#hud{display:flex;gap:24px;font-weight:700}
+.g{color:var(--g)}.m{color:var(--m)}
+#err{color:var(--m);min-height:1.4em}
+</style></head><body>
+<div id="menu">
+<div style="display:flex;flex-direction:column;align-items:center;gap:14px">
+<h1>SNAKE DUEL</h1>
+<p>Eat to grow. Run your head through the other snake and you grow, while it loses its tail from that point on.</p>
+<div class="row"><button id="bl">Local</button><button id="bo">Online</button></div>
+<div id="op" class="row" style="display:none"><input id="code" placeholder="room code" maxlength="20" autocomplete="off"><button id="bj">Join</button></div>
+<div id="err"></div>
+<p id="hint">Local: Green = WASD, Pink = arrow keys. Online: same room code on both sides, WASD or arrows, or swipe.</p>
+</div></div>
+<div id="game">
+<div id="hud"><span class="g" id="h0"></span><span class="m" id="h1"></span></div>
+<div class="box"><canvas id="cv"></canvas><div id="ov"></div></div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+const W=28,H=28,C=20,$=id=>document.getElementById(id),cv=$('cv'),x=cv.getContext('2d');
+cv.width=W*C;cv.height=H*C;
+const DIR={U:[0,-1],D:[0,1],L:[-1,0],R:[1,0]},OPP={U:'D',D:'U',L:'R',R:'L'};
+const eq=(a,b)=>a[0]==b[0]&&a[1]==b[1];
+let mode=null,conn=null,S=null,timer=null,cd=null,flip=false;
+const send=m=>{try{conn&&conn.open&&conn.send(m)}catch(e){}};
+
+function fresh(){return{p:[{b:[[2,H-3],[2,H-2],[2,H-1]],d:'U',q:'U'},{b:[[W-3,2],[W-3,1],[W-3,0]],d:'D',q:'D'}],f:[],ph:'count',n:3,w:-1,why:''}}
+function spawn(s){while(s.f.length<1){const c=[Math.random()*W|0,Math.random()*H|0];if(![...s.p[0].b,...s.p[1].b,...s.f].some(o=>eq(o,c)))s.f.push(c)}}
+
+function step(s){
+  const old=s.p.map(p=>p.b[0]),tails=s.p.map(p=>p.b[p.b.length-1]),nh=[],lose=[0,0],popped=[0,0];
+  s.p.forEach((p,i)=>{p.d=p.q;const v=DIR[p.d];nh[i]=[old[i][0]+v[0],old[i][1]+v[1]]});
+  const clash=eq(nh[0],nh[1])||(eq(nh[0],old[1])&&eq(nh[1],old[0]));
+  s.p.forEach((p,i)=>{
+    const h=nh[i];
+    if(h[0]<0||h[1]<0||h[0]>=W||h[1]>=H)lose[i]=1;
+    const fi=s.f.findIndex(o=>eq(o,h));
+    p.b.unshift(h);
+    if(fi>=0)s.f.splice(fi,1);else{p.b.pop();popped[i]=1}
+    if(p.b.slice(1).some(o=>eq(o,h)))lose[i]=2;
+  });
+  const cut=[0,0],grow=[0,0];
+  s.p.forEach((p,i)=>{const e=s.p[1-i],k=e.b.findIndex((o,j)=>j>0&&eq(o,p.b[0]));if(k>0){cut[1-i]=k;grow[i]=1}});
+  s.p.forEach((p,i)=>{if(grow[i])p.b.push(popped[i]?tails[i]:p.b[p.b.length-1])});
+  s.p.forEach((p,i)=>{if(cut[i]>0)p.b.length=cut[i]});
+  const L=s.p.map(p=>p.b.length);
+  if(clash)return end(s,L[0]>L[1]?0:L[1]>L[0]?1:-1,'heads');
+  if(lose[0]&&lose[1])return end(s,-1,'both');
+  if(lose[0]||lose[1]){const l=lose[0]?0:1;return end(s,1-l,lose[l]==1?'wall':'self')}
+  spawn(s);
+}
+function end(s,w,why){s.ph='over';s.w=w;s.why=why}
+
+function setDir(p,d){if(d in DIR&&d!=OPP[p.d])p.q=d}
+function inp(d,who){
+  if(mode=='local'){if(S.ph!='over')setDir(S.p[who],d)}
+  else if(mode=='host')setDir(S.p[0],d);
+  else if(mode=='guest')send({t:'input',d:OPP[d]});
+}
+const K={w:'U',a:'L',s:'D',d:'R',ArrowUp:'U',ArrowLeft:'L',ArrowDown:'D',ArrowRight:'R'};
+addEventListener('keydown',e=>{
+  if(e.target.tagName=='INPUT')return;
+  const k=e.key.length==1?e.key.toLowerCase():e.key,d=K[k];
+  if(!d)return;e.preventDefault();inp(d,k.startsWith('Arrow')?1:0);
+});
+let t0=null;
+cv.addEventListener('touchstart',e=>{t0=e.touches[0]},{passive:true});
+cv.addEventListener('touchend',e=>{if(!t0)return;const t=e.changedTouches[0],dx=t.clientX-t0.clientX,dy=t.clientY-t0.clientY;t0=null;
+  if(Math.max(Math.abs(dx),Math.abs(dy))<20)return;
+  inp(Math.abs(dx)>Math.abs(dy)?(dx>0?'R':'L'):(dy>0?'D':'U'),0)},{passive:true});
+
+function pack(s){const f=c=>Math.min(H-1,Math.max(0,c[1]))*W+Math.min(W-1,Math.max(0,c[0]));return{p:s.p.map(p=>p.b.map(f)),f:s.f.map(f),ph:s.ph,n:s.n,w:s.w,why:s.why}}
+function unpack(m){return{p:m.p.map(a=>({b:a.map(v=>[v%W,v/W|0])})),f:m.f.map(v=>[v%W,v/W|0]),ph:m.ph,n:m.n,w:m.w,why:m.why}}
+function sync(){render(S);if(mode=='host')send({t:'state',s:pack(S)})}
+
+function startMatch(){
+  clearInterval(timer);clearInterval(cd);
+  S=fresh();spawn(S);sync();
+  cd=setInterval(()=>{
+    S.n--;
+    if(S.n<1){clearInterval(cd);S.ph='fight';sync();
+      setTimeout(()=>{S.ph='play';sync();timer=setInterval(()=>{step(S);sync();if(S.ph=='over')clearInterval(timer)},110)},700)}
+    else sync();
+  },1000);
+}
+
+function render(s){
+  x.fillStyle='#0b1110';x.fillRect(0,0,W*C,H*C);
+  const P=c=>flip?[W-1-c[0],H-1-c[1]]:c;
+  s.f.forEach(c=>{const[a,b]=P(c);x.fillStyle='#ffd24f';x.beginPath();x.arc(a*C+C/2,b*C+C/2,C/3,0,7);x.fill()});
+  s.p.forEach((p,i)=>{
+    const mine=i==(flip?1:0);
+    p.b.forEach((c,j)=>{const[a,b]=P(c);x.fillStyle=j?(mine?'#4fc22a':'#c23a9f'):(mine?'#b6ff9a':'#ffa6ec');x.fillRect(a*C+1,b*C+1,C-2,C-2)});
+  });
+  const gi=flip?1:0;
+  $('h0').textContent='Green '+s.p[gi].b.length;
+  $('h1').textContent='Pink '+s.p[1-gi].b.length;
+  const ov=$('ov');
+  if(s.ph=='count')ov.textContent=s.n;
+  else if(s.ph=='fight')ov.textContent='FIGHT!';
+  else if(s.ph=='over'){
+    const gw=s.w<0?-1:(s.w==gi?0:1),nm=['Green','Pink'];
+    let t=gw<0?'Draw':nm[gw]+' wins';
+    const sub=s.why=='heads'?(gw<0?'Heads collided at equal length':'Heads collided, longer snake wins'):s.why=='both'?'Both crashed':gw<0?'':nm[1-gw]+' crashed into '+(s.why=='wall'?'a wall':'itself');
+    ov.innerHTML='';const a=document.createElement('div');a.textContent=t;ov.append(a);
+    if(sub){const b=document.createElement('div');b.style.fontSize='16px';b.textContent=sub;ov.append(b)}
+    const r=document.createElement('div');r.className='row';
+    const rb=document.createElement('button');rb.textContent='Rematch';rb.onclick=()=>{if(mode=='guest')send({t:'again'});else startMatch()};
+    const mb=document.createElement('button');mb.textContent='Menu';mb.onclick=()=>location.reload();
+    r.append(rb,mb);ov.append(r);
+  } else ov.textContent='';
+}
+
+function showGame(){$('menu').style.display='none';$('game').style.display='flex'}
+$('bl').onclick=()=>{mode='local';flip=false;showGame();startMatch()};
+$('bo').onclick=()=>{$('op').style.display='flex';$('code').focus()};
+$('bj').onclick=goOnline;
+$('code').addEventListener('keydown',e=>{if(e.key=='Enter')goOnline()});
+
+function goOnline(){
+  const code=$('code').value.toLowerCase().replace(/[^a-z0-9]/g,''),err=$('err');
+  err.textContent='';
+  if(!code){err.textContent='Type a room code and share it with your opponent.';return}
+  if(!window.Peer){err.textContent='Could not load the connection library. Check your internet and reload.';return}
+  err.textContent='Connecting...';
+  const pid='snakeduel-'+code,p=new Peer(pid);
+  p.on('open',()=>{mode='wait';err.textContent='Room "'+code+'" is open. Waiting for the other player...'});
+  p.on('connection',c=>{
+    if(conn){c.close();return}
+    conn=c;wire(c);
+    c.on('open',()=>{mode='host';flip=false;showGame();startMatch()});
+  });
+  p.on('error',e=>{
+    if(e.type=='unavailable-id')joinAsGuest(pid);
+    else if(mode!='host'&&mode!='guest')err.textContent='Connection error: '+e.type;
+  });
+}
+function joinAsGuest(pid){
+  const p=new Peer();
+  p.on('open',()=>{
+    const c=p.connect(pid,{reliable:true});conn=c;wire(c);
+    c.on('open',()=>{mode='guest';flip=true;showGame()});
+    setTimeout(()=>{if(mode!='guest')$('err').textContent='Could not reach the room. Try again in a moment, or on another network.'},12000);
+  });
+  p.on('error',e=>{if(mode!='guest')$('err').textContent=e.type=='peer-unavailable'?'Room not found. Try again.':'Connection error: '+e.type});
+}
+function wire(c){
+  c.on('data',m=>{
+    if(!m)return;
+    if(m.t=='state'&&mode=='guest'){S=unpack(m.s);render(S)}
+    else if(m.t=='input'&&mode=='host'&&S)setDir(S.p[1],m.d);
+    else if(m.t=='again'&&mode=='host'&&S&&S.ph=='over')startMatch();
+  });
+  c.on('close',()=>{
+    if(mode!='host'&&mode!='guest')return;
+    mode='gone';clearInterval(timer);clearInterval(cd);
+    const ov=$('ov');ov.innerHTML='';
+    const a=document.createElement('div');a.textContent='Opponent disconnected';
+    const b=document.createElement('button');b.textContent='Menu';b.style.pointerEvents='auto';b.onclick=()=>location.reload();
+    ov.append(a,b);
+  });
+}
+</script>
+</body></html>
